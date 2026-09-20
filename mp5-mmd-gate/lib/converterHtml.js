@@ -204,6 +204,26 @@ module.exports = `<!DOCTYPE html>
       </div>
       <label class="switch"><input type="checkbox" id="flipToggle"><span class="track"></span><span class="thumb"></span></label>
     </div>
+
+    <div class="field" style="margin-top:20px">
+      <label for="shoulderInput">Correção de ombro: <span id="shoulderVal" class="mono">80</span>°</label>
+      <input type="range" id="shoulderInput" min="0" max="180" step="1" value="80">
+      <div class="hint">A MMD costuma ter o braço parado quase na horizontal, o R15 tem o braço caído reto pro lado do corpo. Sem essa correção, os braços ficam tortos/travados. Ajuste até os braços parecerem naturais no Studio — cada modelo de MMD tem um ângulo de descanso levemente diferente.</div>
+    </div>
+    <div class="switch-row">
+      <div>
+        <div class="lbl">Inverter sentido da correção de ombro</div>
+        <div class="hint">Se os braços ficarem pra frente/trás em vez de descansar ao lado do corpo, tenta ativar isso</div>
+      </div>
+      <label class="switch"><input type="checkbox" id="shoulderFlipToggle"><span class="track"></span><span class="thumb"></span></label>
+    </div>
+    <div class="switch-row">
+      <div>
+        <div class="lbl">Usar eixo alternativo na correção de ombro</div>
+        <div class="hint">Se nem o normal nem o "inverter sentido" resolverem, tenta essa opção</div>
+      </div>
+      <label class="switch"><input type="checkbox" id="shoulderAxisToggle"><span class="track"></span><span class="thumb"></span></label>
+    </div>
     <div class="switch-row">
       <div>
         <div class="lbl">Loop</div>
@@ -302,6 +322,17 @@ module.exports = `<!DOCTYPE html>
   function qNormalize(q){
     const n = Math.sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w) || 1;
     return {x:q.x/n,y:q.y/n,z:q.z/n,w:q.w/n};
+  }
+  function qConj(q){ return {x:-q.x,y:-q.y,z:-q.z,w:q.w}; }
+  function qFromAxisAngle(axis, deg){
+    const rad = deg*Math.PI/180;
+    const s = Math.sin(rad/2);
+    return qNormalize({x:axis.x*s, y:axis.y*s, z:axis.z*s, w:Math.cos(rad/2)});
+  }
+  // sandwich a rotation through a rest-pose calibration offset: reorients which
+  // physical axis a source-space rotation bends around, in the target's local frame.
+  function retargetJoint(q, diffQuat){
+    return qNormalize(qMul(qMul(qConj(diffQuat), q), diffQuat));
   }
   function qSlerp(a,b,t){
     let cosom = a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;
@@ -432,6 +463,10 @@ module.exports = `<!DOCTYPE html>
   const scaleInput = document.getElementById("scaleInput");
   const flipToggle = document.getElementById("flipToggle");
   const loopToggle = document.getElementById("loopToggle");
+  const shoulderInput = document.getElementById("shoulderInput");
+  const shoulderVal = document.getElementById("shoulderVal");
+  const shoulderFlipToggle = document.getElementById("shoulderFlipToggle");
+  const shoulderAxisToggle = document.getElementById("shoulderAxisToggle");
   const logEl = document.getElementById("log");
   const downloadCard = document.getElementById("downloadCard");
   const dlLink = document.getElementById("dlLink");
@@ -441,6 +476,7 @@ module.exports = `<!DOCTYPE html>
   let matched = {};
 
   rateInput.addEventListener("input", ()=>{ rateVal.textContent = rateInput.value; });
+  shoulderInput.addEventListener("input", ()=>{ shoulderVal.textContent = shoulderInput.value; });
 
   dropzone.addEventListener("click", ()=>fileInput.click());
   dropzone.addEventListener("dragover", e=>{e.preventDefault(); dropzone.classList.add("drag");});
@@ -532,6 +568,10 @@ module.exports = `<!DOCTYPE html>
     const rate = parseInt(rateInput.value,10) || 30;
     const flip = flipToggle.checked;
     const loop = loopToggle.checked;
+    const shoulderDeg = (parseFloat(shoulderInput.value) || 0) * (shoulderFlipToggle.checked ? -1 : 1);
+    const shoulderAxis = shoulderAxisToggle.checked ? {x:1,y:0,z:0} : {x:0,y:0,z:1};
+    const leftShoulderDiff = qFromAxisAngle(shoulderAxis, -shoulderDeg);
+    const rightShoulderDiff = qFromAxisAngle(shoulderAxis, shoulderDeg);
 
     const anyLegFK = matched.leftLeg || matched.rightLeg || matched.leftKnee || matched.rightKnee;
     if(!anyLegFK){
@@ -611,10 +651,12 @@ module.exports = `<!DOCTYPE html>
       const zero = {x:0,y:0,z:0};
       const leftHand = poseXML("LeftHand", limbQuat("leftWrist"), zero, []);
       const leftLowerArm = poseXML("LeftLowerArm", limbQuat("leftElbow"), zero, [leftHand]);
-      const leftUpperArm = poseXML("LeftUpperArm", limbQuat("leftArm"), zero, [leftLowerArm]);
+      const leftUpperArmQ = retargetJoint(limbQuat("leftArm"), leftShoulderDiff);
+      const leftUpperArm = poseXML("LeftUpperArm", leftUpperArmQ, zero, [leftLowerArm]);
       const rightHand = poseXML("RightHand", limbQuat("rightWrist"), zero, []);
       const rightLowerArm = poseXML("RightLowerArm", limbQuat("rightElbow"), zero, [rightHand]);
-      const rightUpperArm = poseXML("RightUpperArm", limbQuat("rightArm"), zero, [rightLowerArm]);
+      const rightUpperArmQ = retargetJoint(limbQuat("rightArm"), rightShoulderDiff);
+      const rightUpperArm = poseXML("RightUpperArm", rightUpperArmQ, zero, [rightLowerArm]);
       const head = poseXML("Head", headQ, zero, []);
       const upperTorso = poseXML("UpperTorso", upperTorsoQ, zero, [leftUpperArm, rightUpperArm, head]);
 
